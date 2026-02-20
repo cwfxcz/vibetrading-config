@@ -294,7 +294,7 @@
             <h3>ℹ️ 使用说明</h3>
             <p>1. 首次使用需配置 GitHub Token 和 Gist ID（仅保存到浏览器）</p>
             <p>2. 调整开关选择要监控的行业</p>
-            <p>3. 添加关心的关键词（如：特斯拉、比特币）</p>
+            <p>3. 添加关心的关键词（如：特斯拉、智谱）</p>
             <p>4. 点击「保存到 Gist」自动生效（约5分钟后）</p>
         </div>
 
@@ -399,10 +399,7 @@
             <div class="card-title">🔔 跟踪关键词</div>
             <p style="color: #666; font-size: 14px; margin-bottom: 12px;">包含这些关键词的新闻会优先推送</p>
             <div class="keywords-list" id="keywords-list">
-                <div class="keyword-tag">AI<span class="remove" onclick="this.parentElement.remove()">×</span></div>
-                <div class="keyword-tag">大模型<span class="remove" onclick="this.parentElement.remove()">×</span></div>
-                <div class="keyword-tag">比特币<span class="remove" onclick="this.parentElement.remove()">×</span></div>
-                <div class="keyword-tag">特斯拉<span class="remove" onclick="this.parentElement.remove()">×</span></div>
+                <!-- 关键词从 Gist JSON 动态加载，不再硬编码 -->
             </div>
             <div class="input-group">
                 <input type="text" id="new-keyword" placeholder="输入关键词（如：智谱）">
@@ -453,9 +450,10 @@
         const STORAGE_KEY_TOKEN = 'vibetrading_github_token';
         const STORAGE_KEY_GIST = 'vibetrading_gist_id';
 
-        // 页面加载时检查认证状态
+        // 页面加载时检查认证状态并从 Gist 加载配置
         document.addEventListener('DOMContentLoaded', function() {
             checkAuthStatus();
+            loadConfigFromGist();
         });
 
         // 检查认证状态
@@ -613,6 +611,9 @@
                 const configJson = JSON.stringify(config, null, 2);
 
                 // 调用 GitHub API 更新 Gist
+                // 生成更新后的 config.html（用当前页面 HTML，替换关键词区域为最新数据）
+                const updatedHtml = await generateUpdatedHtml(config);
+
                 const response = await fetch(`https://api.github.com/gists/${gistId}`, {
                     method: 'PATCH',
                     headers: {
@@ -625,6 +626,9 @@
                         files: {
                             "vibetrading_config.json": {
                                 content: configJson
+                            },
+                            "config.html": {
+                                content: updatedHtml
                             }
                         }
                     })
@@ -647,6 +651,96 @@
             } finally {
                 btn.disabled = false;
                 btn.textContent = originalText;
+            }
+        }
+
+        // 生成更新后的 config.html 内容（将当前页面状态写入 HTML）
+        async function generateUpdatedHtml(config) {
+            // 获取当前 Gist 中的 config.html 模板
+            const { token, gistId } = getCredentials();
+            let htmlTemplate = document.documentElement.outerHTML;
+
+            // 重建关键词区域的 HTML
+            const keywords = (config.preferences.filters || {}).track_keywords || [];
+            let keywordsHtml = '';
+            keywords.forEach(kw => {
+                keywordsHtml += `                <div class="keyword-tag">${kw}<span class="remove" onclick="this.parentElement.remove()">×</span></div>\n`;
+            });
+
+            // 替换关键词列表区域
+            const keywordsRegex = /<div class="keywords-list" id="keywords-list">[\s\S]*?<\/div>\s*<div class="input-group">/;
+            htmlTemplate = htmlTemplate.replace(keywordsRegex,
+                `<div class="keywords-list" id="keywords-list">\n${keywordsHtml}            </div>\n            <div class="input-group">`
+            );
+
+            // 更新行业开关状态
+            const industries = config.preferences.industries || {};
+            for (const [name, settings] of Object.entries(industries)) {
+                if (settings.enabled) {
+                    htmlTemplate = htmlTemplate.replace(
+                        new RegExp(`id="ind-${name}"(?!\\s+checked)`),
+                        `id="ind-${name}" checked`
+                    );
+                } else {
+                    htmlTemplate = htmlTemplate.replace(
+                        new RegExp(`id="ind-${name}"\\s+checked`),
+                        `id="ind-${name}"`
+                    );
+                }
+            }
+
+            return '<!DOCTYPE html>\n<html lang="zh-CN">\n' + htmlTemplate.replace(/^<html[^>]*>/, '');
+        }
+
+        // 从 Gist 加载配置，动态渲染关键词和行业开关
+        async function loadConfigFromGist() {
+            const { token, gistId } = getCredentials();
+            if (!token || !gistId) return;
+
+            try {
+                const response = await fetch(`https://api.github.com/gists/${gistId}`, {
+                    headers: {
+                        'Authorization': `token ${token}`,
+                        'Accept': 'application/vnd.github.v3+json'
+                    }
+                });
+
+                if (!response.ok) return;
+
+                const data = await response.json();
+                const configFile = data.files['vibetrading_config.json'];
+                if (!configFile) return;
+
+                const config = JSON.parse(configFile.content);
+                const prefs = config.preferences || {};
+
+                // 同步行业开关状态
+                const industries = prefs.industries || {};
+                for (const [name, settings] of Object.entries(industries)) {
+                    const checkbox = document.getElementById(`ind-${name}`);
+                    if (checkbox) {
+                        checkbox.checked = settings.enabled;
+                    }
+                }
+
+                // 同步关键词列表（清空硬编码，用 JSON 数据替换）
+                const keywordsContainer = document.getElementById('keywords-list');
+                keywordsContainer.innerHTML = '';
+                const keywords = (prefs.filters || {}).track_keywords || [];
+                keywords.forEach(kw => {
+                    const div = document.createElement('div');
+                    div.className = 'keyword-tag';
+                    div.innerHTML = `${kw}<span class="remove" onclick="this.parentElement.remove()">×</span>`;
+                    keywordsContainer.appendChild(div);
+                });
+
+                // 同步其他设置
+                const onlyUrl = (prefs.filters || {}).only_with_url || false;
+                document.getElementById('only-url').checked = onlyUrl;
+
+                console.log('[Config] ✅ 从 Gist 加载配置成功');
+            } catch (err) {
+                console.warn('[Config] 从 Gist 加载配置失败:', err.message);
             }
         }
 
